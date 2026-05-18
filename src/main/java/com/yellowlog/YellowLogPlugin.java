@@ -2,18 +2,27 @@ package com.yellowlog;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Provides;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
+import net.runelite.api.EnumComposition;
+import net.runelite.api.Item;
+import net.runelite.api.ItemContainer;
 import net.runelite.api.Player;
 import net.runelite.api.ScriptID;
+import net.runelite.api.StructComposition;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.config.ConfigManager;
@@ -34,6 +43,19 @@ public class YellowLogPlugin extends Plugin
 	private static final String YELLOW_ENTRIES_CONFIG_PREFIX = "yellowEntries.";
 	private static final int HEADER_TITLE_CHILD = 0;
 	private static final String ALL_PETS_TITLE = "all pets";
+	private static final int COLLECTION_LOG_TAB_ENUM_PARAM_ID = 683;
+	private static final int COLLECTION_LOG_PAGE_NAME_PARAM_ID = 689;
+	private static final int COLLECTION_LOG_PAGE_ITEMS_ENUM_PARAM_ID = 690;
+	private static final int COLLECTION_LOG_ITEM_REMAP_ENUM_ID = 3721;
+	private static final int COLLECTION_LOG_UNIQUE_OBTAINED_VARP_ID = 2943;
+
+	private static final int[] COLLECTION_LOG_TAB_STRUCT_IDS = {
+		471, // Bosses
+		472, // Raids
+		473, // Clues
+		474, // Minigames
+		475  // Other
+	};
 
 	private static final Set<Integer> KNOWN_PET_ITEM_IDS = ImmutableSet.of(
 		ItemID.CHAOSELEPET,
@@ -183,6 +205,7 @@ public class YellowLogPlugin extends Plugin
 
 	private final Set<Integer> petItemIds = new HashSet<>(KNOWN_PET_ITEM_IDS);
 	private final Set<String> yellowEntryTitles = new HashSet<>();
+	private final Map<String, List<Integer>> pageItemIdsByTitle = new HashMap<>();
 	private String cacheProfile;
 
 	@Override
@@ -195,6 +218,7 @@ public class YellowLogPlugin extends Plugin
 	protected void shutDown()
 	{
 		yellowEntryTitles.clear();
+		pageItemIdsByTitle.clear();
 		cacheProfile = null;
 		log.debug("YellowLog stopped");
 	}
@@ -242,6 +266,7 @@ public class YellowLogPlugin extends Plugin
 	private void updateCollectionLog()
 	{
 		loadCachedYellowEntries();
+		refreshYellowEntriesFromCollectionContainer();
 
 		Widget title = getEntryTitleWidget();
 		if (title == null)
@@ -283,6 +308,93 @@ public class YellowLogPlugin extends Plugin
 		}
 
 		paintVisibleListEntries();
+	}
+
+	private void refreshYellowEntriesFromCollectionContainer()
+	{
+		ItemContainer collectionItems = client.getItemContainer(InventoryID.COLLECTION_TRANSMIT);
+		if (!hasFullCollectionContainer(collectionItems))
+		{
+			return;
+		}
+
+		loadPageItemDefinitions();
+		if (pageItemIdsByTitle.isEmpty())
+		{
+			return;
+		}
+
+		Set<String> refreshedYellowEntries = new HashSet<>();
+		for (Map.Entry<String, List<Integer>> entry : pageItemIdsByTitle.entrySet())
+		{
+			String entryTitle = entry.getKey();
+			if (!ALL_PETS_TITLE.equals(entryTitle) && isOnlyMissingPet(entry.getValue(), collectionItems))
+			{
+				refreshedYellowEntries.add(entryTitle);
+			}
+		}
+
+		if (!yellowEntryTitles.equals(refreshedYellowEntries))
+		{
+			yellowEntryTitles.clear();
+			yellowEntryTitles.addAll(refreshedYellowEntries);
+			saveCachedYellowEntries();
+		}
+	}
+
+	private boolean hasFullCollectionContainer(ItemContainer collectionItems)
+	{
+		if (collectionItems == null || collectionItems.getItems().length == 0)
+		{
+			return false;
+		}
+
+		int nonEmptyItems = 0;
+		for (Item item : collectionItems.getItems())
+		{
+			if (item.getId() > 0 && item.getQuantity() > 0)
+			{
+				nonEmptyItems++;
+			}
+		}
+
+		int uniqueObtained = client.getVarpValue(COLLECTION_LOG_UNIQUE_OBTAINED_VARP_ID);
+		return uniqueObtained == 0 || nonEmptyItems >= uniqueObtained;
+	}
+
+	private void loadPageItemDefinitions()
+	{
+		if (!pageItemIdsByTitle.isEmpty())
+		{
+			return;
+		}
+
+		EnumComposition itemRemaps = client.getEnum(COLLECTION_LOG_ITEM_REMAP_ENUM_ID);
+		for (int tabStructId : COLLECTION_LOG_TAB_STRUCT_IDS)
+		{
+			StructComposition tabStruct = client.getStructComposition(tabStructId);
+			int tabEnumId = tabStruct.getIntValue(COLLECTION_LOG_TAB_ENUM_PARAM_ID);
+			EnumComposition tabEnum = client.getEnum(tabEnumId);
+			for (int pageStructId : tabEnum.getIntVals())
+			{
+				StructComposition pageStruct = client.getStructComposition(pageStructId);
+				String pageTitle = normalize(pageStruct.getStringValue(COLLECTION_LOG_PAGE_NAME_PARAM_ID));
+				int pageItemsEnumId = pageStruct.getIntValue(COLLECTION_LOG_PAGE_ITEMS_ENUM_PARAM_ID);
+				EnumComposition pageItemsEnum = client.getEnum(pageItemsEnumId);
+
+				List<Integer> itemIds = new ArrayList<>();
+				for (int itemId : pageItemsEnum.getIntVals())
+				{
+					int remappedItemId = itemRemaps.getIntValue(itemId);
+					itemIds.add(remappedItemId > 0 ? remappedItemId : itemId);
+				}
+
+				if (!pageTitle.isEmpty() && !itemIds.isEmpty())
+				{
+					pageItemIdsByTitle.put(pageTitle, itemIds);
+				}
+			}
+		}
 	}
 
 	private void loadCachedYellowEntries()
@@ -373,6 +485,42 @@ public class YellowLogPlugin extends Plugin
 		}
 
 		return totalItems > 1 && missingItems == 1 && missingPetItems == 1;
+	}
+
+	private boolean isOnlyMissingPet(List<Integer> itemIds, ItemContainer collectionItems)
+	{
+		int missingItems = 0;
+		int missingPetItems = 0;
+
+		for (int itemId : itemIds)
+		{
+			if (getItemQuantity(collectionItems, itemId) > 0)
+			{
+				continue;
+			}
+
+			missingItems++;
+			if (petItemIds.contains(itemId))
+			{
+				missingPetItems++;
+			}
+		}
+
+		return itemIds.size() > 1 && missingItems == 1 && missingPetItems == 1;
+	}
+
+	private int getItemQuantity(ItemContainer collectionItems, int itemId)
+	{
+		int quantity = 0;
+		for (Item item : collectionItems.getItems())
+		{
+			if (item.getId() == itemId)
+			{
+				quantity += item.getQuantity();
+			}
+		}
+
+		return quantity;
 	}
 
 	private boolean isItemCell(Widget widget)
