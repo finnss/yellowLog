@@ -159,6 +159,15 @@ public class YellowLogPlugin extends Plugin
 		InterfaceID.Collection.SEARCH_RESULTS
 	};
 
+	private static final int[] COLLECTION_LIST_TEXT_WIDGETS = {
+		InterfaceID.Collection.BOSS_TEXT,
+		InterfaceID.Collection.RAID_TEXT,
+		InterfaceID.Collection.CLUE_TEXT,
+		InterfaceID.Collection.MINIGAME_TEXT,
+		InterfaceID.Collection.OTHER_TEXT,
+		InterfaceID.Collection.SEARCH_RESULTS
+	};
+
 	@Inject
 	private Client client;
 
@@ -237,7 +246,6 @@ public class YellowLogPlugin extends Plugin
 		if (isOnlyMissingPet(items))
 		{
 			yellowEntryTitles.add(entryTitle);
-			paintEntryTitle(title);
 		}
 		else
 		{
@@ -301,20 +309,53 @@ public class YellowLogPlugin extends Plugin
 		return widget != null && !widget.isHidden() && widget.getItemId() > 0;
 	}
 
-	private void paintEntryTitle(Widget title)
-	{
-		if (config.highlightHeader())
-		{
-			title.setTextColor(config.highlightColor().getRGB() & 0xFFFFFF);
-		}
-	}
-
 	private void paintVisibleListEntries()
 	{
 		int color = config.highlightColor().getRGB() & 0xFFFFFF;
+		String colorTag = String.format("%06x", color);
+		for (int widgetId : COLLECTION_LIST_TEXT_WIDGETS)
+		{
+			paintListTextWidget(client.getWidget(widgetId), colorTag);
+		}
+
 		for (int containerId : COLLECTION_LIST_CONTAINERS)
 		{
 			paintVisibleListEntries(client.getWidget(containerId), color);
+		}
+	}
+
+	private void paintListTextWidget(Widget widget, String colorTag)
+	{
+		if (widget == null || widget.isHidden())
+		{
+			return;
+		}
+
+		String text = widget.getText();
+		if (text == null || text.isEmpty())
+		{
+			return;
+		}
+
+		String[] lines = text.split("(?i)<br>", -1);
+		boolean changed = false;
+		for (int i = 0; i < lines.length; i++)
+		{
+			String lineTitle = normalize(lines[i]);
+			if (!lineTitle.isEmpty() && yellowEntryTitles.contains(lineTitle))
+			{
+				String yellowLine = "<col=" + colorTag + ">" + Text.removeTags(lines[i]) + "</col>";
+				if (!yellowLine.equals(lines[i]))
+				{
+					lines[i] = yellowLine;
+					changed = true;
+				}
+			}
+		}
+
+		if (changed)
+		{
+			widget.setText(String.join("<br>", lines));
 		}
 	}
 

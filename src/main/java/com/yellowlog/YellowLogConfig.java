@@ -18,15 +18,4 @@ public interface YellowLogConfig extends Config
 	{
 		return new Color(255, 221, 51);
 	}
-
-	@ConfigItem(
-		position = 1,
-		keyName = "highlightHeader",
-		name = "Highlight entry title",
-		description = "Also color the selected collection log entry title."
-	)
-	default boolean highlightHeader()
-	{
-		return true;
-	}
 }
