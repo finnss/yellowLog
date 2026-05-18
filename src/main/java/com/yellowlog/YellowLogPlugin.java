@@ -31,6 +31,7 @@ import net.runelite.client.config.RuneScapeProfileType;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.util.Text;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -57,6 +58,7 @@ public class YellowLogPlugin extends Plugin
 	private static final int COLLECTION_LOG_PAGE_NAME_PARAM_ID = 689;
 	private static final int COLLECTION_LOG_PAGE_ITEMS_ENUM_PARAM_ID = 690;
 	private static final int COLLECTION_LOG_ITEM_REMAP_ENUM_ID = 3721;
+	private static final String WIKISYNC_PLUGIN_CLASS_NAME = "com.andmcadams.wikisync.WikiSyncPlugin";
 
 	private static final Set<Integer> KNOWN_PET_ITEM_IDS = ImmutableSet.of(
 		ItemID.CHAOSELEPET,
@@ -205,6 +207,9 @@ public class YellowLogPlugin extends Plugin
 	private ConfigManager configManager;
 
 	@Inject
+	private PluginManager pluginManager;
+
+	@Inject
 	private ClientThread clientThread;
 
 	@Inject
@@ -330,7 +335,7 @@ public class YellowLogPlugin extends Plugin
 
 	private void fetchWikiSyncYellowEntries()
 	{
-		if (!config.useWikiSync() || wikiSyncFetchInFlight)
+		if (wikiSyncFetchInFlight || !isWikiSyncPluginActive())
 		{
 			return;
 		}
@@ -401,6 +406,19 @@ public class YellowLogPlugin extends Plugin
 				}
 			}
 		});
+	}
+
+	private boolean isWikiSyncPluginActive()
+	{
+		for (Plugin plugin : pluginManager.getPlugins())
+		{
+			if (WIKISYNC_PLUGIN_CLASS_NAME.equals(plugin.getClass().getName()))
+			{
+				return pluginManager.isPluginActive(plugin);
+			}
+		}
+
+		return false;
 	}
 
 	private void applyWikiSyncCollectionLog(List<Integer> collectionLog)
