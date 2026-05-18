@@ -7,6 +7,7 @@ import java.util.Set;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
+import net.runelite.api.Player;
 import net.runelite.api.ScriptID;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameTick;
@@ -29,6 +30,8 @@ import net.runelite.client.util.Text;
 )
 public class YellowLogPlugin extends Plugin
 {
+	private static final String CONFIG_GROUP = "yellowlog";
+	private static final String YELLOW_ENTRIES_CONFIG_PREFIX = "yellowEntries.";
 	private static final int HEADER_TITLE_CHILD = 0;
 	private static final String ALL_PETS_TITLE = "all pets";
 
@@ -175,8 +178,12 @@ public class YellowLogPlugin extends Plugin
 	@Inject
 	private YellowLogConfig config;
 
+	@Inject
+	private ConfigManager configManager;
+
 	private final Set<Integer> petItemIds = new HashSet<>(KNOWN_PET_ITEM_IDS);
 	private final Set<String> yellowEntryTitles = new HashSet<>();
+	private String cacheProfile;
 
 	@Override
 	protected void startUp()
@@ -188,6 +195,7 @@ public class YellowLogPlugin extends Plugin
 	protected void shutDown()
 	{
 		yellowEntryTitles.clear();
+		cacheProfile = null;
 		log.debug("YellowLog stopped");
 	}
 
@@ -212,9 +220,13 @@ public class YellowLogPlugin extends Plugin
 	@Subscribe
 	public void onClientTick(ClientTick clientTick)
 	{
-		if (!yellowEntryTitles.isEmpty() && client.getWidget(InterfaceID.Collection.ITEMS_CONTENTS) != null)
+		if (client.getWidget(InterfaceID.Collection.ITEMS_CONTENTS) != null)
 		{
-			paintVisibleListEntries();
+			loadCachedYellowEntries();
+			if (!yellowEntryTitles.isEmpty())
+			{
+				paintVisibleListEntries();
+			}
 		}
 	}
 
@@ -229,6 +241,8 @@ public class YellowLogPlugin extends Plugin
 
 	private void updateCollectionLog()
 	{
+		loadCachedYellowEntries();
+
 		Widget title = getEntryTitleWidget();
 		if (title == null)
 		{
@@ -255,14 +269,61 @@ public class YellowLogPlugin extends Plugin
 
 		if (isOnlyMissingPet(items))
 		{
-			yellowEntryTitles.add(entryTitle);
+			if (yellowEntryTitles.add(entryTitle))
+			{
+				saveCachedYellowEntries();
+			}
 		}
 		else
 		{
-			yellowEntryTitles.remove(entryTitle);
+			if (yellowEntryTitles.remove(entryTitle))
+			{
+				saveCachedYellowEntries();
+			}
 		}
 
 		paintVisibleListEntries();
+	}
+
+	private void loadCachedYellowEntries()
+	{
+		Player localPlayer = client.getLocalPlayer();
+		if (localPlayer == null || localPlayer.getName() == null)
+		{
+			return;
+		}
+
+		String playerName = Text.toJagexName(localPlayer.getName());
+		if (playerName.equals(cacheProfile))
+		{
+			return;
+		}
+
+		cacheProfile = playerName;
+		yellowEntryTitles.clear();
+
+		String cachedEntries = configManager.getConfiguration(CONFIG_GROUP, YELLOW_ENTRIES_CONFIG_PREFIX + playerName);
+		if (cachedEntries != null && !cachedEntries.isEmpty())
+		{
+			for (String cachedEntry : Text.fromCSV(cachedEntries))
+			{
+				String entryTitle = normalize(cachedEntry);
+				if (!entryTitle.isEmpty())
+				{
+					yellowEntryTitles.add(entryTitle);
+				}
+			}
+		}
+	}
+
+	private void saveCachedYellowEntries()
+	{
+		if (cacheProfile == null)
+		{
+			return;
+		}
+
+		configManager.setConfiguration(CONFIG_GROUP, YELLOW_ENTRIES_CONFIG_PREFIX + cacheProfile, Text.toCSV(yellowEntryTitles));
 	}
 
 	private Widget getEntryTitleWidget()
