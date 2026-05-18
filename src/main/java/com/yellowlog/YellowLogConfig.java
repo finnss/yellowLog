@@ -16,6 +16,6 @@ public interface YellowLogConfig extends Config
 	)
 	default Color highlightColor()
 	{
-		return new Color(255, 221, 51);
+		return Color.YELLOW;
 	}
 }
