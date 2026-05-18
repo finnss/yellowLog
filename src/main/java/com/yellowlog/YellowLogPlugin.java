@@ -8,6 +8,7 @@ import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.ScriptID;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetLoaded;
@@ -209,6 +210,15 @@ public class YellowLogPlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onClientTick(ClientTick clientTick)
+	{
+		if (!yellowEntryTitles.isEmpty() && client.getWidget(InterfaceID.Collection.ITEMS_CONTENTS) != null)
+		{
+			paintVisibleListEntries();
+		}
+	}
+
+	@Subscribe
 	public void onGameTick(GameTick gameTick)
 	{
 		if (client.getWidget(InterfaceID.Collection.ITEMS_CONTENTS) != null)
@@ -372,7 +382,14 @@ public class YellowLogPlugin extends Plugin
 			widget.setTextColor(color);
 		}
 
-		Widget[] children = widget.getChildren();
+		paintVisibleListEntryChildren(widget.getChildren(), color);
+		paintVisibleListEntryChildren(widget.getDynamicChildren(), color);
+		paintVisibleListEntryChildren(widget.getStaticChildren(), color);
+		paintVisibleListEntryChildren(widget.getNestedChildren(), color);
+	}
+
+	private void paintVisibleListEntryChildren(Widget[] children, int color)
+	{
 		if (children == null)
 		{
 			return;
