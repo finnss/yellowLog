@@ -1,14 +1,23 @@
 package com.yellowlog;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.gson.Gson;
+import com.google.gson.annotations.SerializedName;
 import com.google.inject.Provides;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
+import net.runelite.api.EnumComposition;
 import net.runelite.api.Player;
 import net.runelite.api.ScriptID;
+import net.runelite.api.StructComposition;
 import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ScriptPostFired;
@@ -16,11 +25,20 @@ import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.config.RuneScapeProfileType;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.HttpUrl;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 @Slf4j
 @PluginDescriptor(
@@ -34,6 +52,11 @@ public class YellowLogPlugin extends Plugin
 	private static final String YELLOW_ENTRIES_CONFIG_PREFIX = "yellowEntries.";
 	private static final int HEADER_TITLE_CHILD = 0;
 	private static final String ALL_PETS_TITLE = "all pets";
+	private static final int COLLECTION_LOG_TABS_ENUM_ID = 2102;
+	private static final int COLLECTION_LOG_TAB_ENUM_PARAM_ID = 683;
+	private static final int COLLECTION_LOG_PAGE_NAME_PARAM_ID = 689;
+	private static final int COLLECTION_LOG_PAGE_ITEMS_ENUM_PARAM_ID = 690;
+	private static final int COLLECTION_LOG_ITEM_REMAP_ENUM_ID = 3721;
 
 	private static final Set<Integer> KNOWN_PET_ITEM_IDS = ImmutableSet.of(
 		ItemID.CHAOSELEPET,
@@ -181,9 +204,21 @@ public class YellowLogPlugin extends Plugin
 	@Inject
 	private ConfigManager configManager;
 
+	@Inject
+	private ClientThread clientThread;
+
+	@Inject
+	private OkHttpClient okHttpClient;
+
+	@Inject
+	private Gson gson;
+
 	private final Set<Integer> petItemIds = new HashSet<>(KNOWN_PET_ITEM_IDS);
 	private final Set<String> yellowEntryTitles = new HashSet<>();
+	private final Map<String, List<Integer>> pageItemIdsByTitle = new HashMap<>();
 	private String cacheProfile;
+	private String wikiSyncFetchProfile;
+	private boolean wikiSyncFetchInFlight;
 
 	@Override
 	protected void startUp()
@@ -195,7 +230,10 @@ public class YellowLogPlugin extends Plugin
 	protected void shutDown()
 	{
 		yellowEntryTitles.clear();
+		pageItemIdsByTitle.clear();
 		cacheProfile = null;
+		wikiSyncFetchProfile = null;
+		wikiSyncFetchInFlight = false;
 		log.debug("YellowLog stopped");
 	}
 
@@ -223,6 +261,7 @@ public class YellowLogPlugin extends Plugin
 		if (client.getWidget(InterfaceID.Collection.ITEMS_CONTENTS) != null)
 		{
 			loadCachedYellowEntries();
+			fetchWikiSyncYellowEntries();
 			if (!yellowEntryTitles.isEmpty())
 			{
 				paintVisibleListEntries();
@@ -233,6 +272,9 @@ public class YellowLogPlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick gameTick)
 	{
+		loadCachedYellowEntries();
+		fetchWikiSyncYellowEntries();
+
 		if (client.getWidget(InterfaceID.Collection.ITEMS_CONTENTS) != null)
 		{
 			updateCollectionLog();
@@ -242,6 +284,7 @@ public class YellowLogPlugin extends Plugin
 	private void updateCollectionLog()
 	{
 		loadCachedYellowEntries();
+		fetchWikiSyncYellowEntries();
 
 		Widget title = getEntryTitleWidget();
 		if (title == null)
@@ -283,6 +326,146 @@ public class YellowLogPlugin extends Plugin
 		}
 
 		paintVisibleListEntries();
+	}
+
+	private void fetchWikiSyncYellowEntries()
+	{
+		if (!config.useWikiSync() || wikiSyncFetchInFlight)
+		{
+			return;
+		}
+
+		Player localPlayer = client.getLocalPlayer();
+		if (localPlayer == null || localPlayer.getName() == null)
+		{
+			return;
+		}
+
+		String playerName = Text.removeTags(localPlayer.getName());
+		String normalizedPlayerName = Text.toJagexName(playerName);
+		if (normalizedPlayerName == null || normalizedPlayerName.isEmpty() || normalizedPlayerName.equals(wikiSyncFetchProfile))
+		{
+			return;
+		}
+
+		RuneScapeProfileType profileType = RuneScapeProfileType.getCurrent(client);
+		HttpUrl url = new HttpUrl.Builder()
+			.scheme("https")
+			.host("sync.runescape.wiki")
+			.addPathSegment("runelite")
+			.addPathSegment("player")
+			.addPathSegment(playerName)
+			.addPathSegment(profileType.name())
+			.build();
+
+		wikiSyncFetchProfile = normalizedPlayerName;
+		wikiSyncFetchInFlight = true;
+		log.debug("Fetching WikiSync collection log data for {} ({})", playerName, profileType);
+		okHttpClient.newCall(new Request.Builder().url(url).build()).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				wikiSyncFetchInFlight = false;
+				log.debug("Unable to fetch WikiSync collection log data", e);
+			}
+
+			@Override
+			public void onResponse(Call call, Response response) throws IOException
+			{
+				try (Response ignored = response)
+				{
+					if (!response.isSuccessful())
+					{
+						log.debug("WikiSync collection log request failed: {}", response.code());
+						return;
+					}
+
+					ResponseBody body = response.body();
+					if (body == null)
+					{
+						return;
+					}
+
+					WikiSyncPlayerData playerData = gson.fromJson(body.string(), WikiSyncPlayerData.class);
+					if (playerData == null || playerData.collectionLog == null || playerData.collectionLog.isEmpty())
+					{
+						return;
+					}
+
+					clientThread.invoke(() -> applyWikiSyncCollectionLog(playerData.collectionLog));
+				}
+				finally
+				{
+					wikiSyncFetchInFlight = false;
+				}
+			}
+		});
+	}
+
+	private void applyWikiSyncCollectionLog(List<Integer> collectionLog)
+	{
+		loadCachedYellowEntries();
+		loadPageItemDefinitions();
+		if (pageItemIdsByTitle.isEmpty())
+		{
+			return;
+		}
+
+		Set<Integer> obtainedItems = new HashSet<>(collectionLog);
+		Set<String> refreshedYellowEntries = new HashSet<>();
+		for (Map.Entry<String, List<Integer>> entry : pageItemIdsByTitle.entrySet())
+		{
+			String entryTitle = entry.getKey();
+			if (!ALL_PETS_TITLE.equals(entryTitle) && isOnlyMissingPet(entry.getValue(), obtainedItems))
+			{
+				refreshedYellowEntries.add(entryTitle);
+			}
+		}
+
+		if (!yellowEntryTitles.equals(refreshedYellowEntries))
+		{
+			yellowEntryTitles.clear();
+			yellowEntryTitles.addAll(refreshedYellowEntries);
+			saveCachedYellowEntries();
+			paintVisibleListEntries();
+			log.debug("Loaded {} yellow collection log entries from WikiSync", refreshedYellowEntries.size());
+		}
+	}
+
+	private void loadPageItemDefinitions()
+	{
+		if (!pageItemIdsByTitle.isEmpty())
+		{
+			return;
+		}
+
+		EnumComposition itemRemaps = client.getEnum(COLLECTION_LOG_ITEM_REMAP_ENUM_ID);
+		for (int tabStructId : client.getEnum(COLLECTION_LOG_TABS_ENUM_ID).getIntVals())
+		{
+			StructComposition tabStruct = client.getStructComposition(tabStructId);
+			int tabEnumId = tabStruct.getIntValue(COLLECTION_LOG_TAB_ENUM_PARAM_ID);
+			EnumComposition tabEnum = client.getEnum(tabEnumId);
+			for (int pageStructId : tabEnum.getIntVals())
+			{
+				StructComposition pageStruct = client.getStructComposition(pageStructId);
+				String pageTitle = normalize(pageStruct.getStringValue(COLLECTION_LOG_PAGE_NAME_PARAM_ID));
+				int pageItemsEnumId = pageStruct.getIntValue(COLLECTION_LOG_PAGE_ITEMS_ENUM_PARAM_ID);
+				EnumComposition pageItemsEnum = client.getEnum(pageItemsEnumId);
+
+				List<Integer> itemIds = new ArrayList<>();
+				for (int itemId : pageItemsEnum.getIntVals())
+				{
+					int remappedItemId = itemRemaps.getIntValue(itemId);
+					itemIds.add(remappedItemId > 0 ? remappedItemId : itemId);
+				}
+
+				if (!pageTitle.isEmpty() && !itemIds.isEmpty())
+				{
+					pageItemIdsByTitle.put(pageTitle, itemIds);
+				}
+			}
+		}
 	}
 
 	private void loadCachedYellowEntries()
@@ -373,6 +556,28 @@ public class YellowLogPlugin extends Plugin
 		}
 
 		return totalItems > 1 && missingItems == 1 && missingPetItems == 1;
+	}
+
+	private boolean isOnlyMissingPet(List<Integer> itemIds, Set<Integer> obtainedItems)
+	{
+		int missingItems = 0;
+		int missingPetItems = 0;
+
+		for (int itemId : itemIds)
+		{
+			if (obtainedItems.contains(itemId))
+			{
+				continue;
+			}
+
+			missingItems++;
+			if (petItemIds.contains(itemId))
+			{
+				missingPetItems++;
+			}
+		}
+
+		return itemIds.size() > 1 && missingItems == 1 && missingPetItems == 1;
 	}
 
 	private boolean isItemCell(Widget widget)
@@ -470,6 +675,12 @@ public class YellowLogPlugin extends Plugin
 		}
 
 		return Text.standardize(text);
+	}
+
+	private static class WikiSyncPlayerData
+	{
+		@SerializedName("collection_log")
+		private List<Integer> collectionLog;
 	}
 
 	@Provides

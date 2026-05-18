@@ -18,4 +18,15 @@ public interface YellowLogConfig extends Config
 	{
 		return Color.YELLOW;
 	}
+
+	@ConfigItem(
+		position = 1,
+		keyName = "useWikiSync",
+		name = "Use WikiSync data",
+		description = "Use public WikiSync collection log data to mark entries before they are opened."
+	)
+	default boolean useWikiSync()
+	{
+		return true;
+	}
 }
