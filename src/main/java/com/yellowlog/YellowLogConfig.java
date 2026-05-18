@@ -1,0 +1,32 @@
+package com.yellowlog;
+
+import java.awt.Color;
+import net.runelite.client.config.Config;
+import net.runelite.client.config.ConfigGroup;
+import net.runelite.client.config.ConfigItem;
+
+@ConfigGroup("yellowlog")
+public interface YellowLogConfig extends Config
+{
+	@ConfigItem(
+		position = 0,
+		keyName = "highlightColor",
+		name = "Highlight color",
+		description = "Color used for collection log entries where only the pet is missing."
+	)
+	default Color highlightColor()
+	{
+		return new Color(255, 221, 51);
+	}
+
+	@ConfigItem(
+		position = 1,
+		keyName = "highlightHeader",
+		name = "Highlight entry title",
+		description = "Also color the selected collection log entry title."
+	)
+	default boolean highlightHeader()
+	{
+		return true;
+	}
+}
